@@ -1,128 +1,100 @@
 import streamlit as st
-from fpdf import FPDF
-from datetime import datetime, date, timedelta
+from datetime import date, timedelta
 
 # --- CONFIGURAÇÃO ---
-st.set_page_config(page_title="ERP Rescisão Profissional 2026", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="ERP Rescisão 2026", layout="wide")
 
-def aplicar_piso(valor, piso):
-    """Garante o mínimo de 50% do salário mínimo (R$ 815,00)."""
-    return max(valor, piso)
+def aplicar_piso(valor, piso=815.00):
+    """Garante o mínimo de 50% do salário mínimo para verbas proporcionais."""
+    return max(valor, piso) if valor > 0 else 0
 
-def calcular_avos(data_inicio, data_fim):
+def calcular_meses_13(data_adm, data_dem_projetada):
     """
-    Calcula meses proporcionais (1/12). 
-    Regra: 15 dias ou mais no mês = 1 mês inteiro.
+    Regra: 1/12 avos por mês trabalhado no ano atual.
+    Considera-se o mês se houver 15 dias ou mais de trabalho.
     """
-    meses = data_fim.month
-    if data_fim.day < 15:
-        meses -= 1
+    ano_rescisao = data_dem_projetada.year
+    inicio_ano = date(ano_rescisao, 1, 1)
+    
+    # Se admitido no mesmo ano, conta da admissão, senão de 1º de Janeiro
+    inicio_contagem = max(data_adm, inicio_ano)
+    
+    meses = 0
+    # Loop pelos meses do ano até o mês da demissão projetada
+    for mes in range(inicio_contagem.month, data_dem_projetada.month + 1):
+        if mes < data_dem_projetada.month:
+            meses += 1 # Meses anteriores completos no ano contam 1 avo
+        else:
+            # No último mês, verifica se trabalhou 15 dias ou mais
+            if data_dem_projetada.day >= 15:
+                meses += 1
+                
     return max(0, meses)
 
-def detalhar_aviso_lei_12506(data_adm, data_dem, base_calculo):
-    """Lei 12.506/2011: 30 dias base + 3 dias por ano completo."""
-    anos_completos = (data_dem - data_adm).days // 365
-    anos_limitados = min(anos_completos, 20)
-    valor_dia = base_calculo / 30
-    
-    detalhes = [{"Descrição": "Dias Base (Mínimo)", "Dias": 30, "Valor": round(valor_dia * 30, 2)}]
-    for i in range(1, anos_limitados + 1):
-        detalhes.append({"Descrição": f"Acréscimo {i}º ano completo", "Dias": 3, "Valor": round(valor_dia * 3, 2)})
-    
-    dias_totais = 30 + (anos_limitados * 3)
-    return dias_totais, anos_completos, valor_dia * dias_totais, detalhes
-
 def main():
-    st.title("⚖️ Sistema de Rescisão e Cálculos Trabalhistas - 2026")
+    st.title("⚖️ Calculadora Rescisória 2026 - Correção de 13º")
+    st.markdown("---")
 
-    # --- SEÇÃO 1: DADOS DO CONTRATO ---
-    st.subheader("📋 1. Identificação e Cronologia")
+    # --- SIDEBAR: VALORES ---
+    st.sidebar.header("💰 Bases Financeiras")
+    salario_atual = st.sidebar.number_input("Salário Base Atual", min_value=0.0, step=100.0)
+    media_variaveis = st.sidebar.number_input("Média de Comissões/HE (12 meses)", min_value=0.0)
+    saldo_fgts = st.sidebar.number_input("Saldo para Fins Rescisórios FGTS", min_value=0.0)
+
+    # --- CORPO: DATAS E MOTIVO ---
     c1, c2, c3 = st.columns(3)
-    nome = c1.text_input("Nome do Colaborador")
-    data_adm = c2.date_input("Data de Admissão", value=date(2021, 1, 1))
-    data_dem = c3.date_input("Data de Demissão (Último dia trabalhado)", value=date(2026, 4, 10))
-    motivo = c1.selectbox("Motivo", ["Sem Justa Causa", "Pedido de Demissão", "Acordo Comum"])
-    aviso_tipo = c2.radio("Aviso Prévio", ["Indenizado", "Trabalhado"])
+    data_adm = c1.date_input("Data de Admissão", value=date(2021, 1, 1))
+    data_dem = c2.date_input("Data de Demissão (Último dia trabalhado)", value=date(2026, 4, 10))
+    motivo = c3.selectbox("Motivo", ["Sem Justa Causa", "Pedido de Demissão", "Acordo Comum"])
+    aviso_tipo = c3.radio("Aviso Prévio", ["Indenizado", "Trabalhado"])
 
-    # --- SEÇÃO 2: FINANCEIRO (SIDEBAR) ---
-    st.sidebar.header("💰 Remuneração e FGTS")
-    ultimo_salario = st.sidebar.number_input("Último Salário Bruto", min_value=0.0, value=0.0)
-    media_variaveis = st.sidebar.number_input("Média Comissões/HE (12m)", min_value=0.0, value=0.0)
-    saldo_fgts = st.sidebar.number_input("Saldo Total FGTS", min_value=0.0, value=0.0)
+    # --- LÓGICA DE CÁLCULO ---
+    # 1. Base de Cálculo Integral (Salário + Médias)
+    remuneracao_integral = salario_atual + media_variaveis
+
+    # 2. Aviso Prévio Lei 12.506/2011
+    anos_casa = (data_dem - data_adm).days // 365
+    dias_aviso = 30 + (min(anos_casa, 20) * 3)
     
-    st.sidebar.divider()
-    st.sidebar.subheader("📅 Férias Vencidas")
-    tem_ferias_vencidas = st.sidebar.checkbox("Possui férias vencidas?")
-    multa_ferias_dobra = 0
-    valor_ferias_vencidas_simples = 0
+    # 3. Projeção do Aviso (Crucial para o 13º)
+    # Se o aviso for indenizado, o contrato se "estende" para fins de 13º e Férias
+    data_projetada = data_dem
+    if aviso_tipo == "Indenizado" and motivo != "Pedido de Demissão":
+        data_projetada = data_dem + timedelta(days=dias_aviso)
+
+    # 4. Cálculo de 13º Salário Proporcional
+    avos_13 = calcular_meses_13(data_adm, data_projetada)
+    # Valor 13º = (Remuneração / 12) * Meses Proporcionais
+    valor_13_raw = (remuneracao_integral / 12) * avos_13
+    res_13_final = aplicar_piso(valor_13_raw) if salario_atual > 0 else 0
+
+    # 5. Outras Verbas
+    res_saldo = (salario_atual / 30) * data_dem.day
+    res_aviso = (remuneracao_integral / 30) * dias_aviso if (aviso_tipo == "Indenizado" and motivo == "Sem Justa Causa") else 0
+    # Férias Proporcionais seguem a mesma contagem de avos da projeção
+    res_ferias_prop = aplicar_piso(((remuneracao_integral / 12) * avos_13) * 1.3333) if salario_atual > 0 else 0
     
-    if tem_ferias_vencidas:
-        fora_do_prazo = st.sidebar.checkbox("⚠️ Aplicar Dobra (Art. 137 CLT)")
-        base_f = ultimo_salario + media_variaveis
-        valor_ferias_vencidas_simples = base_f * 1.3333
-        if fora_do_prazo:
-            multa_ferias_dobra = valor_ferias_vencidas_simples
+    multa_fgts = saldo_fgts * 0.4 if motivo == "Sem Justa Causa" else (saldo_fgts * 0.2 if motivo == "Acordo Comum" else 0)
 
-    # --- LÓGICA DE PROJEÇÃO E CÁLCULOS ---
-    PISO = 815.00
-    base_total = ultimo_salario + media_variaveis
+    # --- EXIBIÇÃO ---
+    st.subheader("📋 Demonstrativo de Verbas")
     
-    # 1. Aviso Prévio Proporcional
-    dias_aviso, anos_casa, v_aviso_total, lista_aviso = detalhar_aviso_lei_12506(data_adm, data_dem, base_total)
-    
-    # 2. Projeção do Aviso Prévio (Art. 487 CLT)
-    # Se indenizado, a data final para fins de 13º e férias avança os dias do aviso
-    data_fim_projetada = data_dem
-    if aviso_tipo == "Indenizado":
-        data_fim_projetada = data_dem + timedelta(days=dias_aviso)
-    
-    # 3. Saldo de Salário (Dias reais trabalhados)
-    res_saldo = (ultimo_salario / 30) * data_dem.day
-    
-    # 4. 13º e Férias Proporcionais com Projeção e Regra de 15 dias
-    meses_13 = calcular_avos(date(data_dem.year, 1, 1), data_fim_projetada)
-    # Férias proporcionais (simplificado: meses desde a admissão ou último aniversário)
-    meses_ferias = calcular_avos(data_adm, data_fim_projetada) % 12
-    if meses_ferias == 0 and (data_fim_projetada - data_adm).days >= 15: meses_ferias = 12
+    col_r1, col_r2, col_r3 = st.columns(3)
+    col_r1.metric("13º Proporcional", f"{avos_13}/12 avos", f"R$ {res_13_final:,.2f}")
+    col_r2.metric("Data Projetada", data_projetada.strftime('%d/%m/%Y'))
+    col_r3.metric("Total Líquido Est.", f"R$ {(res_saldo + res_13_final + res_ferias_prop + res_aviso + multa_fgts):,.2f}")
 
-    res_13 = aplicar_piso((base_total / 12) * meses_13, PISO) if base_total > 0 else 0
-    res_ferias_prop = aplicar_piso(((base_total / 12) * meses_ferias) * 1.3333, PISO) if base_total > 0 else 0
-    
-    # 5. Aviso Prévio por Motivo
-    res_aviso = 0
-    if aviso_tipo == "Indenizado":
-        if motivo == "Sem Justa Causa": res_aviso = v_aviso_total
-        elif motivo == "Acordo Comum": res_aviso = v_aviso_total * 0.5
-        
-    # 6. Multa FGTS (40% sobre saldo total)
-    res_multa_fgts = 0
-    if motivo == "Sem Justa Causa": res_multa_fgts = saldo_fgts * 0.40
-    elif motivo == "Acordo Comum": res_multa_fgts = saldo_fgts * 0.20
+    st.markdown("### 🗂️ Memória de Cálculo do 13º")
+    st.write(f"- **Salário Base:** R$ {salario_atual:,.2f}")
+    st.write(f"- **Média de Variáveis (Comissões/HE):** R$ {media_variaveis:,.2f}")
+    st.write(f"- **Base de Cálculo (Salário + Média):** R$ {remuneracao_integral:,.2f}")
+    st.write(f"- **Meses Apurados (Ano {data_dem.year}):** {avos_13} meses (considerando regra de 15 dias e projeção de aviso)")
 
-    # Totalização
-    total_bruto = res_saldo + res_aviso + res_13 + valor_ferias_vencidas_simples + multa_ferias_dobra + res_ferias_prop + res_multa_fgts
-    inss = (res_saldo + res_13) * 0.09
-    total_liquido = max(0, total_bruto - inss)
-
-    # --- INTERFACE ---
-    st.subheader("📊 Demonstrativo Financeiro")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Aviso Prévio", f"{dias_aviso} dias")
-    c2.metric("13º Proporcional", f"{meses_13}/12 avos")
-    c3.metric("Férias Prop.", f"{meses_ferias}/12 avos")
-    c4.metric("LÍQUIDO FINAL", f"R$ {total_liquido:,.2f}")
-
-    st.markdown(f"**Nota de Projeção:** Com o aviso indenizado, a data projetada para cálculo de avos é **{data_fim_projetada.strftime('%d/%m/%Y')}**.")
-
-    st.markdown("### 📜 Detalhamento do Aviso (Lei 12.506/2011)")
-    st.table(lista_aviso)
-
-    st.markdown("### 🗂️ Memória de Cálculo Geral")
-    tabela = {
-        "Descrição": ["Saldo de Salário", f"Aviso Prévio ({dias_aviso} dias)", f"13º Proporcional ({meses_13} avos)", "Férias Vencidas + Dobra", f"Férias Proporcionais ({meses_ferias} avos) + 1/3", "Multa FGTS"],
-        "Valor (R$)": [f"{res_saldo:,.2f}", f"{res_aviso:,.2f}", f"{res_13:,.2f}", f"{(valor_ferias_vencidas_simples + multa_ferias_dobra):,.2f}", f"{res_ferias_prop:,.2f}", f"{res_multa_fgts:,.2f}"]
-    }
-    st.table(tabela)
+    st.table({
+        "Rubrica": ["Saldo de Salário", "13º Proporcional", "Férias Prop + 1/3", "Aviso Prévio", "Multa FGTS"],
+        "Cálculo": [f"{data_dem.day} dias", f"{avos_13}/12 avos", f"{avos_13}/12 avos", f"{dias_aviso} dias", "Sobre Saldo"],
+        "Valor (R$)": [f"{res_saldo:,.2f}", f"{res_13_final:,.2f}", f"{res_ferias_prop:,.2f}", f"{res_aviso:,.2f}", f"{multa_fgts:,.2f}"]
+    })
 
 if __name__ == "__main__":
     main()
