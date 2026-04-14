@@ -1,116 +1,111 @@
 import streamlit as st
+from fpdf import FPDF
+from datetime import datetime
 
-# Configuração da página - Essencial para evitar erros de renderização
-st.set_page_config(page_title="Calculadora Rescisão 2026", page_icon="💰", layout="wide")
+# --- CONFIGURAÇÕES DO SISTEMA ---
+st.set_page_config(page_title="Gestão de Rescisões v2026", layout="wide")
 
 def aplicar_piso(valor, piso):
-    """Garante que a verba proporcional não seja inferior a 50% do salário mínimo."""
     return max(valor, piso)
 
+def gerar_pdf(dados):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 16)
+    pdf.cell(200, 10, "Termo de Rescisão do Contrato de Trabalho (Simulação)", ln=True, align="C")
+    pdf.ln(10)
+    
+    pdf.set_font("Arial", "", 12)
+    for chave, valor in dados.items():
+        pdf.cell(200, 10, f"{chave}: {valor}", ln=True)
+    
+    pdf.ln(10)
+    pdf.set_font("Arial", "I", 10)
+    pdf.cell(200, 10, f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}", ln=True)
+    return pdf.output(dest="S").encode("latin-1")
+
 def main():
-    st.title("⚖️ Sistema de Rescisão Trabalhista - Regras 2026")
+    st.title("🏢 Portal de RH - Módulo de Desligamento 2026")
     st.markdown("---")
 
-    # Parâmetros Legais 2026
+    # --- ENTRADA DE DADOS ORGANIZADA ---
+    with st.container():
+        col_id1, col_id2 = st.columns(2)
+        with col_id1:
+            nome_func = st.text_input("Nome Completo do Colaborador")
+            cpf_func = st.text_input("CPF")
+        with col_id2:
+            data_adm = st.date_input("Data de Admissão")
+            data_dem = st.date_input("Data de Demissão")
+
+    st.sidebar.header("📊 Parâmetros de Cálculo")
+    salario_base = st.sidebar.number_input("Salário Fixo Mensal", min_value=1630.0, value=2500.0)
+    media_variaveis = st.sidebar.number_input("Média de Comissões/DSR (12 meses)", min_value=0.0, value=0.0)
+    saldo_fgts = st.sidebar.number_input("Saldo p/ Fins Rescisórios FGTS", min_value=0.0, value=5000.0)
+    
+    motivo = st.sidebar.selectbox("Tipo de Rescisão", 
+        ["Sem Justa Causa", "Pedido de Demissão", "Acordo Comum"])
+    
+    meses_prop = st.sidebar.slider("Meses Proporcionais (Ano Atual)", 1, 12, 6)
+    dias_trabalhados = st.sidebar.slider("Dias Trabalhados no Mês Final", 1, 30, 15)
+
+    # --- PROCESSAMENTO LOGÍSTICO (REGRAS 2026) ---
     SALARIO_MINIMO = 1630.00
-    PISO_VERBA = SALARIO_MINIMO / 2  # R$ 815,00
-
-    # --- ENTRADA DE DADOS (SIDEBAR) ---
-    st.sidebar.header("📋 Dados Contratuais")
+    PISO_VERBA = SALARIO_MINIMO / 2 # R$ 815,00
     
-    ultimo_salario = st.sidebar.number_input("Último Salário Fixo (R$)", min_value=1630.0, value=2500.0, step=50.0)
-    media_comissoes = st.sidebar.number_input("Média de Comissões (R$)", min_value=0.0, value=0.0, step=50.0)
-    adicionais = st.sidebar.number_input("Adicionais (Insalubridade/Peric.) (R$)", min_value=0.0, value=0.0, step=10.0)
+    remuneracao_total = salario_base + media_variaveis
     
-    st.sidebar.divider()
+    # Cálculos
+    res_saldo = (remuneracao_total / 30) * dias_trabalhados
+    res_13 = aplicar_piso((remuneracao_total / 12) * meses_prop, PISO_VERBA)
+    res_ferias = aplicar_piso(((remuneracao_total / 12) * meses_prop) * 1.3333, PISO_VERBA)
     
-    # CAMPO CRÍTICO: Este valor agora altera diretamente a Multa FGTS
-    saldo_fgts_base = st.sidebar.number_input("Saldo p/ Fins Rescisórios FGTS (R$)", min_value=0.0, value=5000.0, step=100.0, help="O valor total depositado pela empresa durante o contrato.")
-    
-    motivo = st.sidebar.selectbox(
-        "Motivo do Desligamento",
-        ["Sem Justa Causa", "Pedido de Demissão", "Acordo Comum (Art. 484-A)"]
-    )
-
-    meses_prop = st.sidebar.slider("Meses Proporcionais (13º/Férias)", 1, 12, 6)
-    dias_trabalhados = st.sidebar.slider("Dias no último mês", 1, 30, 15)
-
-    # --- LÓGICA DE CÁLCULO ---
-    
-    # 1. Base de Cálculo (Remuneração Integral)
-    remuneracao_total = ultimo_salario + media_comissoes + adicionais
-    
-    # 2. Saldo de Salário (Dias trabalhados)
-    res_saldo_salario = (remuneracao_total / 30) * dias_trabalhados
-
-    # 3. 13º Salário Proporcional (Aplica regra do piso de 50% do SM)
-    valor_13_calculado = (remuneracao_total / 12) * meses_prop
-    res_13 = aplicar_piso(valor_13_calculado, PISO_VERBA)
-
-    # 4. Férias Proporcionais + 1/3 (Aplica regra do piso de 50% do SM)
-    valor_ferias_base = (remuneracao_total / 12) * meses_prop
-    valor_ferias_com_terco = valor_ferias_base * 1.3333
-    res_ferias = aplicar_piso(valor_ferias_com_terco, PISO_VERBA)
-
-    # 5. Aviso Prévio e Multa do FGTS (Lógica dependente do motivo)
-    aviso_previo = 0
     multa_fgts = 0
-    percentual_multa = 0
-    
+    aviso_previo = 0
     if motivo == "Sem Justa Causa":
+        multa_fgts = saldo_fgts * 0.40
         aviso_previo = remuneracao_total
-        percentual_multa = 0.40
-        multa_fgts = saldo_fgts_base * percentual_multa
-    elif motivo == "Acordo Comum (Art. 484-A)":
+    elif motivo == "Acordo Comum":
+        multa_fgts = saldo_fgts * 0.20
         aviso_previo = remuneracao_total * 0.50
-        percentual_multa = 0.20
-        multa_fgts = saldo_fgts_base * percentual_multa
-    elif motivo == "Pedido de Demissão":
-        aviso_previo = 0
-        multa_fgts = 0  # Não há multa no pedido de demissão
-        percentual_multa = 0
 
-    # 6. Deduções (INSS Progressivo 2026)
-    base_inss = res_saldo_salario + res_13
-    if base_inss <= 1630: 
-        inss = base_inss * 0.075
-    elif base_inss <= 2866: 
-        inss = (base_inss * 0.09) - 24.45
-    else: 
-        inss = (base_inss * 0.12) - 110.00
-
-    # Totalização
-    total_bruto = res_saldo_salario + res_13 + res_ferias + aviso_previo + multa_fgts
+    # Deduções
+    inss = (res_saldo + res_13) * 0.09 # Simplificado p/ exemplo
+    total_bruto = res_saldo + res_13 + res_ferias + aviso_previo + multa_fgts
     total_liquido = total_bruto - inss
 
-    # --- INTERFACE DE EXIBIÇÃO ---
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Remuneração Integral", f"R$ {remuneracao_total:,.2f}")
-    c2.metric("Multa Rescisória (FGTS)", f"R$ {multa_fgts:,.2f}", delta=f"{percentual_multa*100:.0f}% sobre o saldo")
-    c3.metric("Líquido Final", f"R$ {total_liquido:,.2f}")
+    # --- PAINEL DE RESULTADOS ESTILO DASHBOARD ---
+    st.subheader("📋 Resumo Financeiro")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total Bruto", f"R$ {total_bruto:,.2f}")
+    m2.metric("Total Descontos", f"R$ {inss:,.2f}")
+    m3.metric("Líquido Final", f"R$ {total_liquido:,.2f}")
+    m4.metric("Multa FGTS", f"R$ {multa_fgts:,.2f}")
 
-    st.markdown("### 📝 Detalhamento das Verbas")
-    
-    # Tabela formatada para o usuário
-    detalhes = {
-        "Descrição da Verba": ["Saldo de Salário", "13º Salário Proporcional", "Férias + 1/3 Constitucional", "Aviso Prévio Indenizado", "Multa Rescisória (FGTS)"],
-        "Cálculo Base": ["Dias trabalhados", "Meses proporcionais", "Meses + 1/3", "Última Remuneração", f"{percentual_multa*100:.0f}% do Saldo"],
-        "Valor Bruto (R$)": [
-            f"R$ {res_saldo_salario:,.2f}",
-            f"R$ {res_13:,.2f}",
-            f"R$ {res_ferias:,.2f}",
-            f"R$ {aviso_previo:,.2f}",
-            f"R$ {multa_fgts:,.2f}"
-        ]
+    st.markdown("### 📄 Detalhamento para o Holerite")
+    tabela_rh = {
+        "Cód": ["001", "002", "003", "004", "005"],
+        "Descrição da Verba": ["Saldo de Salário", "13º Salário Proporcional", "Férias Prop. + 1/3", "Aviso Prévio Indenizado", "Multa Rescisória FGTS"],
+        "Valor (R$)": [f"{res_saldo:,.2f}", f"{res_13:,.2f}", f"{res_ferias:,.2f}", f"{aviso_previo:,.2f}", f"{multa_fgts:,.2f}"]
     }
-    st.table(detalhes)
+    st.table(tabela_rh)
 
-    st.error(f"➖ Desconto INSS: R$ {inss:,.2f}")
-    
-    with st.expander("ℹ️ Informações sobre as Regras de 2026"):
-        st.write(f"- **Piso Aplicado:** Nenhuma verba proporcional é inferior a **R$ {PISO_VERBA:,.2f}** (50% do salário mínimo).")
-        st.write("- **FGTS:** A multa é calculada sobre o saldo para fins rescisórios informado no menu lateral.")
-        st.write("- **Imposto de Renda:** Isenção aplicada para valores totais até R$ 5.000,00 conforme nova diretriz fiscal.")
+    # --- EXPORTAÇÃO ---
+    st.markdown("---")
+    if st.button("🖨️ Gerar Recibo de Quitação em PDF"):
+        dados_doc = {
+            "Colaborador": nome_func,
+            "CPF": cpf_func,
+            "Motivo": motivo,
+            "Remuneração Base": f"R$ {remuneracao_total:,.2f}",
+            "Saldo de Salário": f"R$ {res_saldo:,.2f}",
+            "13 Salário": f"R$ {res_13:,.2f}",
+            "Férias + 1/3": f"R$ {res_ferias:,.2f}",
+            "Multa FGTS": f"R$ {multa_fgts:,.2f}",
+            "TOTAL LÍQUIDO": f"R$ {total_liquido:,.2f}"
+        }
+        pdf_bytes = gerar_pdf(dados_doc)
+        st.download_button(label="Baixar PDF", data=pdf_bytes, file_name=f"rescisao_{nome_func}.pdf", mime="application/pdf")
 
 if __name__ == "__main__":
     main()
