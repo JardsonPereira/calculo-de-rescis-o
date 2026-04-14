@@ -50,75 +50,65 @@ def main():
     motivo = c3.selectbox("Motivo do Desligamento", ["Sem Justa Causa", "Pedido de Demissão", "Acordo Comum"])
     aviso_tipo = c3.radio("Aviso Prévio", ["Indenizado", "Trabalhado"])
 
-    # --- SEÇÃO 2: HISTÓRICO E VARIÁVEIS (SIDEBAR) ---
+    # --- SEÇÃO 2: FINANCEIRO (SIDEBAR) ---
     st.sidebar.header("💰 Remuneração e Histórico")
-    ultimo_salario_bruto = st.sidebar.number_input("Último Salário Bruto Atual", min_value=1630.0, value=3000.0)
+    
+    # AJUSTE: Campos iniciando em ZERO
+    ultimo_salario_bruto = st.sidebar.number_input("Último Salário Bruto Atual", min_value=0.0, value=0.0, step=100.0)
     
     st.sidebar.subheader("Médias (Últimos 12 meses)")
     media_variaveis = st.sidebar.number_input("Média de Comissões/HE", min_value=0.0, value=0.0)
     
     st.sidebar.divider()
     st.sidebar.subheader("🏦 Fundo de Garantia")
-    saldo_fgts_total = st.sidebar.number_input("Saldo Total Depositado (5 anos + correções)", min_value=0.0, value=12000.0)
+    
+    # AJUSTE: Campo iniciando em ZERO
+    saldo_fgts_total = st.sidebar.number_input("Saldo Total Depositado (FGTS)", min_value=0.0, value=0.0, step=100.0)
+    
     tem_ferias_vencidas = st.sidebar.checkbox("Possui Férias Vencidas?")
 
-    # --- LOGICA DE CÁLCULO ESPECÍFICA ---
+    # --- LOGICA DE CÁLCULO ---
     SALARIO_MIN_2026 = 1630.00
     PISO_VERBA = SALARIO_MIN_2026 / 2 # R$ 815,00
 
-    # Base: Último salário bruto + Médias (Conforme solicitado)
     base_calculo = ultimo_salario_bruto + media_variaveis
-    
-    # Aviso Proporcional
     dias_aviso, anos_casa = calcular_aviso_proporcional(data_adm, data_dem)
     
-    # Proporcionalidades (1/12 avos)
-    # 13º: Meses trabalhados no ano atual (Ex: Jan a Abr = 4 meses)
     meses_13 = data_dem.month if data_dem.day >= 15 else data_dem.month - 1
-    
-    # Férias Prop: Meses do período aquisitivo atual
-    # Para o exemplo (01/01 a 10/04), são 3 meses completos + fração de 10 dias (não conta se < 15)
     meses_ferias_prop = data_dem.month - 1 if data_dem.day < 15 else data_dem.month
 
-    # --- CÁLCULO DAS VERBAS ---
-    # 1. Saldo de Salário
+    # Cálculos das Verbas
     res_saldo_salario = (ultimo_salario_bruto / 30) * data_dem.day
 
-    # 2. Aviso Prévio Indenizado
     res_aviso = 0
     if motivo == "Sem Justa Causa" and aviso_tipo == "Indenizado":
         res_aviso = (base_calculo / 30) * dias_aviso
     elif motivo == "Acordo Comum" and aviso_tipo == "Indenizado":
         res_aviso = ((base_calculo / 30) * dias_aviso) * 0.5
 
-    # 3. 13º Proporcional
-    res_13 = aplicar_piso((base_calculo / 12) * meses_13, PISO_VERBA)
-
-    # 4. Férias
+    res_13 = aplicar_piso((base_calculo / 12) * meses_13, PISO_VERBA) if base_calculo > 0 else 0
     res_ferias_vencidas = (base_calculo * 1.3333) if tem_ferias_vencidas else 0
-    res_ferias_prop = aplicar_piso(((base_calculo / 12) * meses_ferias_prop) * 1.3333, PISO_VERBA)
+    res_ferias_prop = aplicar_piso(((base_calculo / 12) * meses_ferias_prop) * 1.3333, PISO_VERBA) if base_calculo > 0 else 0
 
-    # 5. Multa FGTS (40% sobre saldo total)
     multa_fgts = 0
     if motivo == "Sem Justa Causa":
         multa_fgts = saldo_fgts_total * 0.40
     elif motivo == "Acordo Comum":
         multa_fgts = saldo_fgts_total * 0.20
 
-    # Totais
+    # Totais e Deduções
     total_bruto = res_saldo_salario + res_aviso + res_13 + res_ferias_vencidas + res_ferias_prop + multa_fgts
-    inss = (res_saldo_salario + res_13) * 0.09 # Estimado 2026
-    total_liquido = total_bruto - inss
+    inss = (res_saldo_salario + res_13) * 0.09 # Estimativa INSS
+    total_liquido = max(0, total_bruto - inss)
 
-    # --- DASHBOARD DE EXIBIÇÃO ---
+    # --- DASHBOARD ---
     st.subheader("📊 2. Demonstrativo Financeiro")
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Aviso Prévio", f"{dias_aviso} dias")
     col2.metric("Tempo de Casa", f"{anos_casa} anos")
-    col3.metric("Multa FGTS (40%)", f"R$ {multa_fgts:,.2f}")
+    col3.metric("Multa FGTS", f"R$ {multa_fgts:,.2f}")
     col4.metric("LÍQUIDO FINAL", f"R$ {total_liquido:,.2f}")
 
-    # Tabela de Rubricas
     st.markdown("### 🗂️ Memória de Cálculo")
     rubricas_tabela = {
         "Descritivo": [
@@ -127,7 +117,7 @@ def main():
             f"13º Proporcional ({meses_13}/12)", 
             "Férias Vencidas + 1/3",
             f"Férias Proporcionais ({meses_ferias_prop}/12) + 1/3", 
-            "Multa Rescisória FGTS (sobre saldo total)"
+            "Multa Rescisória FGTS"
         ],
         "Valor": [
             f"R$ {res_saldo_salario:,.2f}", f"R$ {res_aviso:,.2f}", 
@@ -137,34 +127,17 @@ def main():
     }
     st.table(rubricas_tabela)
 
-    # --- SEÇÃO 4: PRAZOS E DOCUMENTOS ---
-    st.subheader("📅 3. Prazos e Obrigações (Regras 2026)")
-    prazo_pagto = (data_dem.replace(day=data_dem.day + 10) if data_dem.day <= 20 else data_dem) # Simplificação de lógica de calendário
-    
-    st.warning(f"**Data limite para pagamento:** Até 10 dias corridos (Aprox. {prazo_pagto.strftime('%d/%m/%Y')})")
-    
-    st.markdown("""
-    **Documentação Necessária para Homologação:**
-    * **TRCT:** Termo de Rescisão assinado.
-    * **Chave FGTS:** Emitida via FGTS Digital.
-    * **Guia Seguro-Desemprego:** Se houver direito.
-    * **PPP:** Perfil Profissiográfico Previdenciário atualizado.
-    * **Exame Demissional:** Realizado dentro do prazo legal.
-    """)
-
     # --- PDF ---
     if st.button("🖨️ Exportar Termo de Quitação em PDF"):
-        if not nome: st.error("Informe o nome.")
+        if ultimo_salario_bruto <= 0:
+            st.error("Por favor, insira o salário do colaborador.")
         else:
             dados_pdf = {
                 "Colaborador": nome, "CPF": cpf,
                 "Admissao": data_adm.strftime('%d/%m/%Y'),
                 "Demissao": data_dem.strftime('%d/%m/%Y'),
                 "Tempo de Casa": f"{anos_casa} anos",
-                "Aviso Previo": f"{dias_aviso} dias",
-                "Total Bruto": f"R$ {total_bruto:,.2f}",
-                "Desconto INSS": f"R$ {inss:,.2f}",
-                "VALOR LIQUIDO": f"R$ {total_liquido:,.2f}"
+                "Total Liquido": f"R$ {total_liquido:,.2f}"
             }
             pdf_b = gerar_pdf(dados_pdf, rubricas_tabela)
             st.download_button("📥 Baixar PDF", pdf_b, f"Rescisao_{nome}.pdf", "application/pdf")
