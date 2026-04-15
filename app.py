@@ -5,12 +5,21 @@ from fpdf import FPDF
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="ERP Rescisão 2026", layout="wide", page_icon="⚖️")
 
-# --- FUNÇÕES SUPORTE ---
-def calcular_avos(inicio, fim):
-    if not inicio or not fim: return 0
-    m = (fim.year - inicio.year) * 12 + fim.month - inicio.month
-    if fim.day >= 15: m += 1
-    return max(0, m)
+# --- FUNÇÃO CORRIGIDA DE CÁLCULO DE AVOS (FÉRIAS PROP) ---
+def calcular_avos_ferias(adm, dem_com_projecao):
+    """Calcula meses de férias: cada 30 dias de contrato ou fração >= 15 dias."""
+    if not adm or not dem_com_projecao: return 0
+    
+    # Diferença total em dias
+    dias_totais = (dem_com_projecao - adm).days
+    meses = dias_totais // 30
+    dias_restantes = dias_totais % 30
+    
+    if dias_restantes >= 15:
+        meses += 1
+    
+    # Férias proporcionais são sempre dentro do ciclo de 12 meses
+    return meses % 12 if meses % 12 != 0 or meses == 0 else 12
 
 def gerar_pdf_bytes(dados):
     pdf = FPDF()
@@ -41,8 +50,7 @@ def gerar_pdf_bytes(dados):
     pdf.cell(140, 10, "TOTAL LIQUIDO", 1, 0)
     pdf.cell(50, 10, f"R$ {dados['liquido']:,.2f}", 1, 1, "R")
     
-    # Campo de Assinatura
-    pdf.ln(30)
+    pdf.ln(25)
     pdf.cell(90, 0.2, "", "T", 0)
     pdf.cell(10, 0.2, "", 0, 0)
     pdf.cell(90, 0.2, "", "T", 1)
@@ -51,20 +59,17 @@ def gerar_pdf_bytes(dados):
     
     return pdf.output(dest="S").encode("latin-1")
 
-# --- INTERFACE PRINCIPAL ---
+# --- INTERFACE ---
 st.title("⚖️ ERP de Rescisão Profissional")
 
-# Inputs Iniciais Zerados
 with st.container():
     col1, col2, col3 = st.columns(3)
     nome_emp = col1.text_input("Nome do Colaborador", value="")
     dt_adm = col2.date_input("Data de Admissão", value=None, format="DD/MM/YYYY")
     dt_dem = col3.date_input("Data de Demissão", value=None, format="DD/MM/YYYY")
-    
-    motivo_saida = col1.selectbox("Motivo", ["Sem Justa Causa", "Pedido de Demissão", "Justa Causa"])
+    motivo_saida = col1.selectbox("Motivo", ["Sem Justa Causa", "Pedido de Demissão", "Acordo Comum", "Justa Causa"])
     tipo_aviso = col2.radio("Aviso Prévio", ["Indenizado", "Trabalhado", "Descontado"])
 
-# Sidebar Zerada
 st.sidebar.header("💰 Financeiro")
 sal_base = st.sidebar.number_input("Salário Base", value=0.0)
 outras_medias = st.sidebar.number_input("Médias", value=0.0)
@@ -72,72 +77,76 @@ fgts_total = st.sidebar.number_input("Saldo FGTS", value=0.0)
 
 st.sidebar.divider()
 st.sidebar.header("⚖️ Opções Legais")
-vencidas_check = st.sidebar.checkbox("Férias Vencidas?")
+vencidas_check = st.sidebar.checkbox("Possui Férias Vencidas?")
 multa477_check = st.sidebar.checkbox("Aplicar Multa 477 (Atraso)")
 
-# --- LÓGICA DE PROCESSAMENTO ---
 if dt_adm and dt_dem:
-    # Cálculo Lei 12.506/11 (Aviso Prévio Proporcional)
+    # 1. Lei 12.506/11 (Aviso Prévio)
     anos_casa = (dt_dem - dt_adm).days // 365
     dias_adicionais = min(anos_casa, 20) * 3
     dias_totais_aviso = 30 + dias_adicionais
     
-    # Detalhe Visual da Lei
-    st.success(f"### 📜 Detalhamento da Lei 12.506/11\n"
-               f"Tempo de serviço: **{anos_casa} anos**.\n"
-               f"Pela lei, o aviso prévio será de **{dias_totais_aviso} dias** "
-               f"(30 dias base + {dias_adicionais} dias por tempo de casa).")
+    # Projeção do Aviso (Impacta Férias e 13º)
+    dt_projecao = dt_dem
+    if tipo_aviso == "Indenizado" and motivo_saida == "Sem Justa Causa":
+        dt_projecao = dt_dem + timedelta(days=dias_totais_aviso)
 
-    # Cálculos Financeiros
+    # 2. Cálculos Financeiros
     base = sal_base + outras_medias
     valor_dia = base / 30
     
+    # Saldo Salário
     s_salario = valor_dia * dt_dem.day
-    v_13 = (base / 12) * calcular_avos(date(dt_dem.year, 1, 1), dt_dem)
-    v_ferias_p = (base / 12) * (calcular_avos(dt_adm, dt_dem) % 12)
+    
+    # 13º Salário (Considerando Projeção)
+    avos_13 = (dt_projecao.month if dt_projecao.day >= 15 else dt_projecao.month - 1)
+    if dt_adm.year == dt_dem.year:
+        avos_13 = avos_13 - dt_adm.month + 1
+    v_13 = (base / 12) * max(0, avos_13)
+    
+    # Férias Proporcionais (CORRIGIDO)
+    avos_ferias = calcular_avos_ferias(dt_adm, dt_projecao)
+    v_ferias_p = (base / 12) * avos_ferias
+    
     v_ferias_v = base if vencidas_check else 0.0
     v_terco = (v_ferias_p + v_ferias_v) / 3
     
     v_aviso_val = (valor_dia * dias_totais_aviso) if (tipo_aviso == "Indenizado" and motivo_saida == "Sem Justa Causa") else 0.0
     v_multa477_val = sal_base if multa477_check else 0.0
-    v_multa_fgts = fgts_total * 0.4 if motivo_saida == "Sem Justa Causa" else 0.0
+    
+    # Multa FGTS (40% ou 20% no acordo)
+    percentual_multa = 0.4 if motivo_saida == "Sem Justa Causa" else (0.2 if motivo_saida == "Acordo Comum" else 0.0)
+    v_multa_fgts = fgts_total * percentual_multa
 
-    # Estrutura de Dados (Créditos)
+    # Estrutura de Créditos
     creditos = {
         "Saldo de Salário": f"{s_salario:,.2f}",
-        "13º Salário": f"{v_13:,.2f}",
-        "Férias Proporcionais": f"{v_ferias_p:,.2f}",
+        f"13º Salário ({avos_13} avos)": f"{v_13:,.2f}",
+        f"Férias Proporcionais ({avos_ferias}/12)": f"{v_ferias_p:,.2f}",
         "1/3 Constitucional": f"{v_terco:,.2f}"
     }
     if v_ferias_v > 0: creditos["Férias Vencidas"] = f"{v_ferias_v:,.2f}"
     if v_aviso_val > 0: creditos[f"Aviso Prévio ({dias_totais_aviso} dias)"] = f"{v_aviso_val:,.2f}"
     if v_multa477_val > 0: creditos["Multa Art. 477 CLT"] = f"{v_multa477_val:,.2f}"
-    if v_multa_fgts > 0: creditos["Multa FGTS (40%)"] = f"{v_multa_fgts:,.2f}"
+    if v_multa_fgts > 0: creditos[f"Multa FGTS ({int(percentual_multa*100)}%)"] = f"{v_multa_fgts:,.2f}"
 
-    # Totais
     total_bruto = sum(float(x.replace(",", "")) for x in creditos.values())
     desc_inss = (s_salario + v_13) * 0.09
     total_liq = total_bruto - desc_inss
 
-    # EXIBIÇÃO NA TELA
+    # EXIBIÇÃO
+    st.success(f"### 📜 Lei 12.506/11: {dias_totais_aviso} dias de Aviso Prévio.")
     st.divider()
     c_a, c_b = st.columns(2)
     with c_a:
-        st.write("### 🟢 Resumo de Créditos")
+        st.write("### 🟢 Verbas Rescisórias")
         st.table(creditos)
     with c_b:
-        st.write("### 💰 Totais")
-        st.metric("Total Líquido", f"R$ {total_liq:,.2f}")
-        st.write(f"Desconto INSS Est.: R$ {desc_inss:,.2f}")
+        st.write("### 💰 Resultado")
+        st.metric("LÍQUIDO FINAL", f"R$ {total_liq:,.2f}")
+        st.info(f"Férias calculadas sobre {avos_ferias} meses.")
 
-    # Botão de PDF
-    dados_p = {
-        "nome": nome_emp, "adm": dt_adm.strftime("%d/%m/%Y"), "dem": dt_dem.strftime("%d/%m/%Y"),
-        "creditos": creditos, "liquido": total_liq, "motivo": motivo_saida
-    }
-    
-    pdf_b = gerar_pdf_bytes(dados_p)
-    st.download_button("📥 Gerar PDF para Assinatura", data=pdf_b, file_name="Rescisao.pdf", mime="application/pdf")
-
+    pdf_b = gerar_pdf_bytes({"nome": nome_emp, "adm": dt_adm.strftime("%d/%m/%Y"), "dem": dt_dem.strftime("%d/%m/%Y"), "creditos": creditos, "liquido": total_liq})
+    st.download_button("📥 Baixar PDF Detalhado", data=pdf_b, file_name=f"Rescisao_{nome_emp}.pdf", mime="application/pdf")
 else:
-    st.warning("⚠️ Selecione as datas de Admissão e Demissão para começar.")
+    st.warning("Preencha as datas para calcular as férias proporcionais.")
