@@ -1,11 +1,12 @@
 import streamlit as st
 from datetime import datetime, date, timedelta
+from fpdf import FPDF
+import base64
 
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="ERP Rescisão Profissional 2026", layout="wide", page_icon="⚖️")
 
 def calcular_avos_clt(data_inicio, data_fim):
-    """Regra CLT: 15 dias ou mais no mês = 1/12 avos."""
     if not data_inicio or not data_fim: return 0
     meses = (data_fim.year - data_inicio.year) * 12 + data_fim.month - data_inicio.month
     if data_fim.day >= 15:
@@ -13,157 +14,168 @@ def calcular_avos_clt(data_inicio, data_fim):
     return max(0, meses)
 
 def detalhar_lei_12506(data_adm, data_dem, base):
-    """Especificação técnica da Lei 12.506/2011 (Aviso Prévio Proporcional)."""
     if not data_adm or not data_dem: return 0, 0, 0, 0, []
-    
     anos_completos = (data_dem - data_adm).days // 365
-    anos_para_calculo = min(anos_completos, 20) # Limite de 20 anos para o adicional (total 90 dias)
+    anos_para_calculo = min(anos_completos, 20)
     dias_extras = anos_para_calculo * 3
     total_dias = 30 + dias_extras
-    
     valor_dia = base / 30 if base > 0 else 0
-    
     especificacao = [
-        {"Descrição": "Aviso Prévio Base (Constitucional)", "Dias": 30, "Valor (R$)": f"{valor_dia * 30:,.2f}"}
+        {"Descrição": "Aviso Prévio Base", "Dias": 30, "Valor": valor_dia * 30}
     ]
-    
     if anos_para_calculo > 0:
         especificacao.append({
-            "Descrição": f"Adicional Lei 12.506 ({anos_para_calculo} anos x 3 dias)",
+            "Descrição": f"Adicional Lei 12.506 ({anos_para_calculo} anos)",
             "Dias": dias_extras,
-            "Valor (R$)": f"{valor_dia * dias_extras:,.2f}"
+            "Valor": valor_dia * dias_extras
         })
-        
     return total_dias, anos_completos, valor_dia * 30, valor_dia * dias_extras, especificacao
+
+def gerar_pdf(dados):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 16)
+    
+    # Cabeçalho
+    pdf.cell(190, 10, "TRCT - Termo de Rescisão do Contrato de Trabalho", 0, 1, "C")
+    pdf.set_font("Arial", "", 10)
+    pdf.cell(190, 10, f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}", 0, 1, "R")
+    pdf.ln(5)
+
+    # Dados do Colaborador
+    pdf.set_fill_color(240, 240, 240)
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(190, 8, " DADOS DO CONTRATO", 0, 1, "L", True)
+    pdf.set_font("Arial", "", 11)
+    pdf.cell(95, 8, f"Colaborador: {dados['nome']}", 0, 0)
+    pdf.cell(95, 8, f"Motivo: {dados['motivo']}", 0, 1)
+    pdf.cell(95, 8, f"Admissão: {dados['data_adm'].strftime('%d/%m/%Y')}", 0, 0)
+    pdf.cell(95, 8, f"Demissão: {dados['data_dem'].strftime('%d/%m/%Y')}", 0, 1)
+    pdf.ln(5)
+
+    # Verbas Rescisórias
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(190, 8, " DISCRIMINAÇÃO DAS VERBAS", 0, 1, "L", True)
+    pdf.set_font("Arial", "", 10)
+    
+    for rubrica, valor in dados['creditos'].items():
+        pdf.cell(140, 7, rubrica, 1)
+        pdf.cell(50, 7, f"R$ {valor}", 1, 1, "R")
+    
+    pdf.set_font("Arial", "B", 10)
+    pdf.cell(140, 8, "TOTAL BRUTO", 1)
+    pdf.cell(50, 8, f"R$ {dados['total_prov']:,.2f}", 1, 1, "R")
+    pdf.ln(5)
+
+    # Descontos
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(190, 8, " DESCONTOS", 0, 1, "L", True)
+    pdf.set_font("Arial", "", 10)
+    for rubrica, valor in dados['debitos'].items():
+        pdf.cell(140, 7, rubrica, 1)
+        pdf.cell(50, 7, f"R$ {valor}", 1, 1, "R")
+    
+    pdf.set_font("Arial", "B", 11)
+    pdf.cell(140, 10, "LÍQUIDO A RECEBER", 1)
+    pdf.cell(50, 10, f"R$ {dados['total_liq']:,.2f}", 1, 1, "R")
+    
+    # Assinaturas
+    pdf.ln(20)
+    pdf.cell(90, 10, "________________________________", 0, 0, "C")
+    pdf.cell(10, 10, "", 0, 0)
+    pdf.cell(90, 10, "________________________________", 0, 1, "C")
+    pdf.cell(90, 5, "EMPRESA", 0, 0, "C")
+    pdf.cell(10, 5, "", 0, 0)
+    pdf.cell(90, 5, "COLABORADOR", 0, 1, "C")
+    
+    return pdf.output(dest="S").encode("latin-1")
 
 def main():
     st.title("⚖️ Sistema de Gestão de Rescisões - Versão 2026")
-    st.info("Cálculo atualizado com Lei 12.506/11, Férias Vencidas e Multas CLT.")
 
     # --- ENTRADA DE DADOS ---
     with st.container():
         c1, c2, c3 = st.columns(3)
-        nome = c1.text_input("Nome do Colaborador")
-        data_adm = c2.date_input("Data de Admissão", value=None, format="DD/MM/YYYY")
-        data_dem = c3.date_input("Data de Demissão (Último dia)", value=None, format="DD/MM/YYYY")
-        
-        motivo = c1.selectbox("Motivo da Saída", ["Sem Justa Causa", "Pedido de Demissão", "Acordo Comum", "Justa Causa"])
+        nome = c1.text_input("Nome do Colaborador", value="Colaborador Exemplo")
+        data_adm = c2.date_input("Data de Admissão", value=date(2020, 1, 1), format="DD/MM/YYYY")
+        data_dem = c3.date_input("Data de Demissão", value=date(2026, 4, 15), format="DD/MM/YYYY")
+        motivo = c1.selectbox("Motivo", ["Sem Justa Causa", "Pedido de Demissão", "Acordo Comum", "Justa Causa"])
         aviso_status = c2.radio("Tipo de Aviso", ["Indenizado", "Trabalhado", "Não Cumprido (Descontar)"])
 
-    # --- FINANCEIRO (SIDEBAR) ---
-    st.sidebar.header("💰 Proventos e Médias")
-    salario = st.sidebar.number_input("Salário Base", min_value=0.0, value=0.0, step=100.0)
-    medias = st.sidebar.number_input("Médias Variáveis", min_value=0.0, value=0.0)
-    saldo_fgts = st.sidebar.number_input("Saldo FGTS", min_value=0.0, value=0.0)
-    
-    st.sidebar.divider()
-    st.sidebar.header("⚖️ Verbas Legais Extras")
-    # Lei das Férias Vencidas (Art. 137 CLT)
+    # --- SIDEBAR ---
+    salario = st.sidebar.number_input("Salário Base", value=3000.0)
+    medias = st.sidebar.number_input("Médias Variáveis", value=0.0)
+    saldo_fgts = st.sidebar.number_input("Saldo FGTS", value=10000.0)
     tem_ferias_vencidas = st.sidebar.checkbox("Possui Férias Vencidas?")
-    # Multa por atraso no pagamento (Art. 477 CLT)
     aplicar_multa_477 = st.sidebar.checkbox("Aplicar Multa Art. 477 (Atraso)")
-    
-    st.sidebar.divider()
-    st.sidebar.header("🛑 Descontos")
     faltas_dias = st.sidebar.number_input("Faltas (Dias)", min_value=0)
-    consignado = st.sidebar.number_input("Empréstimo Consignado", min_value=0.0)
 
     if data_adm and data_dem:
-        # LÓGICA DE CÁLCULO
         base_calc = salario + medias
         total_dias_aviso, anos_casa, v_base_aviso, v_extras_aviso, tabela_lei = detalhar_lei_12506(data_adm, data_dem, base_calc)
         
-        # Projeção do Aviso para fins de 13º e Férias
-        data_proj = data_dem
-        if aviso_status == "Indenizado" and motivo == "Sem Justa Causa":
-            data_proj = data_dem + timedelta(days=total_dias_aviso)
-
-        # 1. Saldo de Salário
+        # Cálculos de Verbas
         res_saldo = (salario / 30) * data_dem.day
-
-        # 2. 13º Salário Proporcional
-        inicio_13 = date(data_dem.year, 1, 1) if data_adm.year < data_dem.year else data_adm
+        avos_13 = calcular_avos_clt(date(data_dem.year, 1, 1), data_dem)
+        avos_ferias = calcular_avos_clt(data_adm, data_dem) % 12
         
-        # 3. Férias
-        if motivo == "Justa Causa":
-            # Na justa causa, perde 13º prop. e Férias prop. (Súmula 171 TST)
-            avos_13, avos_ferias = 0, 0
-        else:
-            avos_13 = calcular_avos_clt(inicio_13, data_proj)
-            # Férias proporcionais considerando o ciclo de 12 meses
-            # Usamos o resto da divisão por 12 para pegar os avos do último ciclo
-            meses_totais = calcular_avos_clt(data_adm, data_proj)
-            avos_ferias = meses_totais % 12
-            # Se completou exatamente 12 meses (ou múltiplos), entende-se 12/12 do período atual se houver projeção
-            if avos_ferias == 0 and meses_totais > 0: avos_ferias = 0 
-
         res_13 = (base_calc / 12) * avos_13
         res_ferias_prop = (base_calc / 12) * avos_ferias
-        
-        # --- CÁLCULO FÉRIAS VENCIDAS (Lei Art. 137) ---
-        # Se houver férias vencidas, paga-se o valor integral. 
-        # Nota: Se passarem 2 anos sem gozo, seria em dobro, mas aqui calculamos a verba simples vencida.
         res_ferias_vencidas = base_calc if tem_ferias_vencidas else 0.0
-        
-        # 1/3 sobre todas as férias (prop + vencidas)
         terco_total = (res_ferias_prop + res_ferias_vencidas) / 3
+        multa_477 = salario if aplicar_multa_477 else 0.0
         
-        # --- MULTA ART. 477 ---
-        valor_multa_477 = salario if aplicar_multa_477 else 0.0
-        
-        # Aviso e Multas FGTS
-        v_aviso_total = 0.0
-        multa_fgts = 0.0
-        if motivo == "Sem Justa Causa":
-            v_aviso_total = (v_base_aviso + v_extras_aviso) if aviso_status == "Indenizado" else v_extras_aviso
-            multa_fgts = saldo_fgts * 0.40
-        elif motivo == "Acordo Comum":
-            v_aviso_total = (v_base_aviso + v_extras_aviso) * 0.5 if aviso_status == "Indenizado" else (v_extras_aviso * 0.5)
-            multa_fgts = saldo_fgts * 0.20
+        v_aviso = (v_base_aviso + v_extras_aviso) if (aviso_status == "Indenizado" and motivo == "Sem Justa Causa") else 0.0
+        multa_fgts = saldo_fgts * 0.40 if motivo == "Sem Justa Causa" else 0.0
 
-        # Descontos
-        desc_inss = (res_saldo + res_13) * 0.09 # Estimativa simples
-        desc_aviso = salario if aviso_status == "Não Cumprido (Descontar)" else 0.0
-        
-        total_prov = res_saldo + res_13 + res_ferias_prop + res_ferias_vencidas + terco_total + v_aviso_total + multa_fgts + valor_multa_477
-        total_desc = desc_inss + desc_aviso + consignado + ((salario / 30) * faltas_dias)
-        total_liq = max(0, total_prov - total_desc)
+        # Totais
+        total_prov = res_saldo + res_13 + res_ferias_prop + res_ferias_vencidas + terco_total + v_aviso + multa_477 + multa_fgts
+        desc_inss = (res_saldo + res_13) * 0.09
+        desc_faltas = (salario / 30) * faltas_dias
+        total_desc = desc_inss + desc_faltas
+        total_liq = total_prov - total_desc
 
-        # --- EXIBIÇÃO ---
-        st.divider()
-        st.subheader("📜 Especificação Lei 12.506/2011 & Tempo de Serviço")
-        st.write(f"O colaborador possui **{anos_casa} anos** completos de casa.")
-        st.table(tabela_lei)
+        # --- DICIONÁRIOS PARA O PDF ---
+        creditos_dict = {
+            "Saldo Salário": f"{res_saldo:,.2f}",
+            "13º Proporcional": f"{res_13:,.2f}",
+            "Férias Proporcionais": f"{res_ferias_prop:,.2f}",
+            "1/3 Constitucional": f"{terco_total:,.2f}",
+            "Aviso Prévio Indenizado": f"{v_aviso:,.2f}",
+            "Multa FGTS (40%)": f"{multa_fgts:,.2f}"
+        }
+        if tem_ferias_vencidas: creditos_dict["Férias Vencidas"] = f"{res_ferias_vencidas:,.2f}"
+        if aplicar_multa_477: creditos_dict["Multa Art. 477 CLT"] = f"{multa_477:,.2f}"
 
+        debitos_dict = {
+            "INSS": f"{desc_inss:,.2f}",
+            "Faltas/DSR": f"{desc_faltas:,.2f}"
+        }
+
+        # --- INTERFACE ---
         st.divider()
         c_m1, c_m2, c_m3 = st.columns(3)
         c_m1.metric("Proventos", f"R$ {total_prov:,.2f}")
-        c_m2.metric("Descontos", f"R$ {total_desc:,.2f}", delta_color="inverse")
-        c_m3.metric("LÍQUIDO FINAL", f"R$ {total_liq:,.2f}")
+        c_m2.metric("Descontos", f"R$ {total_desc:,.2f}")
+        c_m3.metric("Líquido", f"R$ {total_liq:,.2f}")
 
-        # Tabelas de Memória
-        col_e, col_d = st.columns(2)
-        with col_e:
-            st.write("### 🟢 Créditos")
-            rubricas_credito = {
-                "Rubrica": ["Saldo Salário", "13º Prop.", "Férias Prop.", "1/3 Constitucional", "Multa FGTS"], 
-                "Valor": [f"{res_saldo:,.2f}", f"{res_13:,.2f}", f"{res_ferias_prop:,.2f}", f"{terco_total:,.2f}", f"{multa_fgts:,.2f}"]
-            }
-            if tem_ferias_vencidas:
-                rubricas_credito["Rubrica"].append("Férias Vencidas")
-                rubricas_credito["Valor"].append(f"{res_ferias_vencidas:,.2f}")
-            if valor_multa_477 > 0:
-                rubricas_credito["Rubrica"].append("Multa Art. 477 CLT")
-                rubricas_credito["Valor"].append(f"{valor_multa_477:,.2f}")
-            
-            st.table(rubricas_credito)
-            
-        with col_d:
-            st.write("### 🔴 Débitos")
-            st.table({"Rubrica": ["INSS", "Aviso Desc.", "Consignado/Faltas"], 
-                      "Valor": [f"{desc_inss:,.2f}", f"{desc_aviso:,.2f}", f"{consignado + ((salario/30)*faltas_dias):,.2f}"]})
-    else:
-        st.warning("⚠️ Insira as datas para visualizar o detalhamento completo.")
+        # Botão de Download
+        dados_rescisao = {
+            "nome": nome, "data_adm": data_adm, "data_dem": data_dem, "motivo": motivo,
+            "creditos": creditos_dict, "debitos": debitos_dict,
+            "total_prov": total_prov, "total_liq": total_liq
+        }
+        
+        pdf_bytes = gerar_pdf(dados_rescisao)
+        st.download_button(
+            label="📄 Baixar Rescisão Detalhada (PDF)",
+            data=pdf_bytes,
+            file_name=f"Rescisao_{nome.replace(' ', '_')}.pdf",
+            mime="application/pdf"
+        )
+        
+        st.write("### Detalhamento das Verbas")
+        st.table(creditos_dict)
 
 if __name__ == "__main__":
     main()
