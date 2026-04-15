@@ -17,13 +17,12 @@ def detalhar_lei_12506(data_adm, data_dem, base):
     if not data_adm or not data_dem: return 0, 0, 0, 0, []
     
     anos_completos = (data_dem - data_adm).days // 365
-    anos_para_calculo = min(anos_completos, 20) # Limite da lei (60 dias extras)
+    anos_para_calculo = min(anos_completos, 20)
     dias_extras = anos_para_calculo * 3
     total_dias = 30 + dias_extras
     
     valor_dia = base / 30 if base > 0 else 0
     
-    # Gerar especificação para a tabela
     especificacao = [
         {"Descrição": "Aviso Prévio Base (Constitucional)", "Dias": 30, "Valor (R$)": f"{valor_dia * 30:,.2f}"}
     ]
@@ -58,10 +57,14 @@ def main():
     saldo_fgts = st.sidebar.number_input("Saldo FGTS", min_value=0.0, value=0.0)
     
     st.sidebar.divider()
+    st.sidebar.header("⚖️ Verbas Legais Extras")
+    tem_ferias_vencidas = st.sidebar.checkbox("Possui Férias Vencidas?")
+    aplicar_multa_477 = st.sidebar.checkbox("Aplicar Multa Art. 477 (Atraso)")
+    
+    st.sidebar.divider()
     st.sidebar.header("🛑 Descontos")
     faltas_dias = st.sidebar.number_input("Faltas (Dias)", min_value=0)
     consignado = st.sidebar.number_input("Empréstimo Consignado", min_value=0.0)
-    tem_ferias_vencidas = st.sidebar.checkbox("Possui férias vencidas?")
 
     if data_adm and data_dem:
         # LÓGICA DE CÁLCULO
@@ -73,11 +76,13 @@ def main():
         if aviso_status == "Indenizado" and motivo == "Sem Justa Causa":
             data_proj = data_dem + timedelta(days=total_dias_aviso)
 
-        # Verbas Proporcionais (Sem restrição de piso)
+        # 1. Saldo de Salário
         res_saldo = (salario / 30) * data_dem.day
+
+        # 2. 13º Salário
         inicio_13 = date(data_dem.year, 1, 1) if data_adm.year < data_dem.year else data_adm
         
-        # Na Justa Causa perde proporcionais
+        # 3. Férias Proporcionais
         if motivo == "Justa Causa":
             avos_13, avos_ferias = 0, 0
         else:
@@ -86,10 +91,16 @@ def main():
             if avos_ferias == 0 and (data_proj - data_adm).days >= 15: avos_ferias = 12
 
         res_13 = (base_calc / 12) * avos_13
-        res_ferias = (base_calc / 12) * avos_ferias
-        res_terco = res_ferias / 3
+        res_ferias_prop = (base_calc / 12) * avos_ferias
         
-        # Aviso e Multas
+        # --- LÓGICA DE FÉRIAS VENCIDAS ---
+        res_ferias_vencidas = base_calc if tem_ferias_vencidas else 0.0
+        terco_constitucional = (res_ferias_prop + res_ferias_vencidas) / 3
+        
+        # --- MULTA ART. 477 ---
+        valor_multa_477 = salario if aplicar_multa_477 else 0.0
+        
+        # Aviso e Multas FGTS
         v_aviso_total = 0.0
         multa_fgts = 0.0
         if motivo == "Sem Justa Causa":
@@ -100,35 +111,51 @@ def main():
             multa_fgts = saldo_fgts * 0.20
 
         # Descontos
-        desc_inss = (res_saldo + res_13) * 0.09
+        desc_inss = (res_saldo + res_13) * 0.09 # Simplificado para exemplo
         desc_aviso = salario if aviso_status == "Não Cumprido (Descontar)" else 0.0
         
-        total_prov = res_saldo + res_13 + res_ferias + res_terco + v_aviso_total + multa_fgts
+        total_prov = res_saldo + res_13 + res_ferias_prop + res_ferias_vencidas + terco_constitucional + v_aviso_total + multa_fgts + valor_multa_477
         total_desc = desc_inss + desc_aviso + consignado + ((salario / 30) * faltas_dias)
         total_liq = max(0, total_prov - total_desc)
 
         # EXIBIÇÃO
         st.divider()
-        st.subheader("📜 Especificação Lei 12.506/2011")
-        st.write(f"O colaborador possui **{anos_casa} anos** de tempo de serviço.")
-        st.table(tabela_lei)
-
-        st.divider()
-        c_m1, c_m2, c_m3 = st.columns(3)
-        c_m1.metric("Proventos", f"R$ {total_prov:,.2f}")
-        c_m2.metric("Descontos", f"R$ {total_desc:,.2f}", delta_color="inverse")
-        c_m3.metric("LÍQUIDO FINAL", f"R$ {total_liq:,.2f}")
+        st.subheader("📜 Detalhamento Legal")
+        
+        col_info1, col_info2 = st.columns(2)
+        col_info1.write(f"**Tempo de Casa:** {anos_casa} anos")
+        col_info2.write(f"**Projeção do Aviso:** {data_proj.strftime('%d/%m/%Y')}")
 
         # Tabelas de Memória
         col_e, col_d = st.columns(2)
         with col_e:
             st.write("### 🟢 Créditos")
-            st.table({"Rubrica": ["Saldo Salário", "13º Prop.", "Férias Prop.", "Multa FGTS"], 
-                      "Valor": [f"{res_saldo:,.2f}", f"{res_13:,.2f}", f"{res_ferias + res_terco:,.2f}", f"{multa_fgts:,.2f}"]})
+            dados_creditos = {
+                "Rubrica": ["Saldo Salário", f"13º Prop. ({avos_13}/12)", f"Férias Prop. ({avos_ferias}/12)", "1/3 Constitucional", "Multa FGTS"],
+                "Valor": [f"{res_saldo:,.2f}", f"{res_13:,.2f}", f"{res_ferias_prop:,.2f}", f"{terco_constitucional:,.2f}", f"{multa_fgts:,.2f}"]
+            }
+            
+            if tem_ferias_vencidas:
+                dados_creditos["Rubrica"].append("Férias Vencidas")
+                dados_creditos["Valor"].append(f"{res_ferias_vencidas:,.2f}")
+            
+            if valor_multa_477 > 0:
+                dados_creditos["Rubrica"].append("Multa Art. 477 CLT")
+                dados_creditos["Valor"].append(f"{valor_multa_477:,.2f}")
+                
+            st.table(dados_creditos)
+
         with col_d:
             st.write("### 🔴 Débitos")
-            st.table({"Rubrica": ["INSS", "Aviso Desc.", "Consignado"], 
-                      "Valor": [f"{desc_inss:,.2f}", f"{desc_aviso:,.2f}", f"{consignado:,.2f}"]})
+            st.table({"Rubrica": ["INSS (S. Salário + 13º)", "Aviso Prévio Indenizado (Desc.)", "Consignado / Faltas"], 
+                      "Valor": [f"{desc_inss:,.2f}", f"{desc_aviso:,.2f}", f"{consignado + ((salario/30)*faltas_dias):,.2f}"]})
+
+        st.divider()
+        c_m1, c_m2, c_m3 = st.columns(3)
+        c_m1.metric("Total Proventos", f"R$ {total_prov:,.2f}")
+        c_m2.metric("Total Descontos", f"R$ {total_desc:,.2f}", delta_color="inverse")
+        c_m3.metric("LÍQUIDO A RECEBER", f"R$ {total_liq:,.2f}")
+        
     else:
         st.warning("⚠️ Insira as datas para visualizar o detalhamento da Lei 12.506/2011.")
 
