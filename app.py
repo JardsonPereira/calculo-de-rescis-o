@@ -5,15 +5,30 @@ from fpdf import FPDF
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="ERP Rescisão 2026", layout="wide", page_icon="⚖️")
 
-# --- FUNÇÃO DE CÁLCULO DE AVOS (FÉRIAS PROP) ---
+# --- FUNÇÕES DE CÁLCULO ---
 def calcular_avos_ferias(adm, dem_com_projecao):
     if not adm or not dem_com_projecao: return 0
     dias_totais = (dem_com_projecao - adm).days
     meses = dias_totais // 30
     dias_restantes = dias_totais % 30
-    if dias_restantes >= 15:
-        meses += 1
+    if dias_restantes >= 15: meses += 1
     return meses % 12 if meses % 12 != 0 or meses == 0 else 12
+
+def calcular_irrf(base_calculo):
+    """Calcula IRRF 2026 com base na tabela progressiva simplificada."""
+    # Dedução simplificada padrão (exemplo base 2024/2026)
+    base_liquida = max(0, base_calculo - 564.80) 
+    
+    if base_liquida <= 2259.20:
+        return 0.0
+    elif base_liquida <= 2826.65:
+        return (base_liquida * 0.075) - 169.44
+    elif base_liquida <= 3751.05:
+        return (base_liquida * 0.15) - 381.44
+    elif base_liquida <= 4664.68:
+        return (base_liquida * 0.225) - 662.77
+    else:
+        return (base_liquida * 0.275) - 896.00
 
 def gerar_pdf_bytes(dados):
     pdf = FPDF()
@@ -29,7 +44,6 @@ def gerar_pdf_bytes(dados):
     pdf.cell(95, 7, f"Admissao: {dados['adm']}", 1, 0)
     pdf.cell(95, 7, f"Demissao: {dados['dem']}", 1, 1)
     
-    # Seção de Créditos
     pdf.ln(5)
     pdf.set_font("Arial", "B", 10)
     pdf.cell(140, 8, " VERBAS (CREDITOS)", 1, 0, "L", True)
@@ -39,7 +53,6 @@ def gerar_pdf_bytes(dados):
         pdf.cell(140, 7, k, 1)
         pdf.cell(50, 7, f"R$ {v}", 1, 1, "R")
         
-    # Seção de Débitos
     pdf.ln(3)
     pdf.set_font("Arial", "B", 10)
     pdf.cell(140, 8, " DESCONTOS (DEBITOS)", 1, 0, "L", True)
@@ -60,7 +73,6 @@ def gerar_pdf_bytes(dados):
     pdf.cell(90, 0.2, "", "T", 1)
     pdf.cell(90, 5, "EMPRESA", 0, 0, "C")
     pdf.cell(90, 5, "COLABORADOR", 0, 1, "R")
-    
     return pdf.output(dest="S").encode("latin-1")
 
 # --- INTERFACE ---
@@ -74,14 +86,13 @@ with st.container():
     motivo_saida = col1.selectbox("Motivo", ["Sem Justa Causa", "Pedido de Demissão", "Acordo Comum", "Justa Causa"])
     tipo_aviso = col2.radio("Aviso Prévio", ["Indenizado", "Trabalhado", "Descontado"])
 
-# Sidebar
 st.sidebar.header("💰 Proventos")
 sal_base = st.sidebar.number_input("Salário Base", value=0.0)
 outras_medias = st.sidebar.number_input("Médias", value=0.0)
 fgts_total = st.sidebar.number_input("Saldo FGTS", value=0.0)
 
 st.sidebar.divider()
-st.sidebar.header("🛑 Descontos")
+st.sidebar.header("🛑 Descontos Manuais")
 faltas_dias = st.sidebar.number_input("Faltas (Dias)", min_value=0, value=0)
 outros_descontos = st.sidebar.number_input("Outros Descontos", value=0.0)
 
@@ -102,6 +113,7 @@ if dt_adm and dt_dem:
     base = sal_base + outras_medias
     valor_dia = base / 30
     
+    # Créditos
     s_salario = valor_dia * dt_dem.day
     avos_13 = (dt_projecao.month if dt_projecao.day >= 15 else dt_projecao.month - 1)
     if dt_adm.year == dt_dem.year: avos_13 = avos_13 - dt_adm.month + 1
@@ -113,27 +125,32 @@ if dt_adm and dt_dem:
     v_terco = (v_ferias_p + v_ferias_v) / 3
     v_aviso_val = (valor_dia * dias_totais_aviso) if (tipo_aviso == "Indenizado" and motivo_saida == "Sem Justa Causa") else 0.0
     v_multa477_val = sal_base if multa477_check else 0.0
-    percentual_multa = 0.4 if motivo_saida == "Sem Justa Causa" else (0.2 if motivo_saida == "Acordo Comum" else 0.0)
-    v_multa_fgts = fgts_total * percentual_multa
+    v_multa_fgts = fgts_total * (0.4 if motivo_saida == "Sem Justa Causa" else 0.2 if motivo_saida == "Acordo Comum" else 0.0)
 
     creditos = {
         "Saldo de Salário": f"{s_salario:,.2f}",
         f"13º Salário ({avos_13} avos)": f"{v_13:,.2f}",
-        f"Férias Proporcionais ({avos_ferias}/12)": f"{v_ferias_p:,.2f}",
+        f"Férias Prop. ({avos_ferias}/12)": f"{v_ferias_p:,.2f}",
         "1/3 Constitucional": f"{v_terco:,.2f}"
     }
     if v_ferias_v > 0: creditos["Férias Vencidas"] = f"{v_ferias_v:,.2f}"
     if v_aviso_val > 0: creditos[f"Aviso Prévio ({dias_totais_aviso} dias)"] = f"{v_aviso_val:,.2f}"
     if v_multa477_val > 0: creditos["Multa Art. 477 CLT"] = f"{v_multa477_val:,.2f}"
-    if v_multa_fgts > 0: creditos[f"Multa FGTS ({int(percentual_multa*100)}%)"] = f"{v_multa_fgts:,.2f}"
+    if v_multa_fgts > 0: creditos["Multa FGTS"] = f"{v_multa_fgts:,.2f}"
 
-    # --- LÓGICA DE DÉBITOS ---
+    # --- LÓGICA DE DÉBITOS (INSS + IRRF) ---
     v_faltas = valor_dia * faltas_dias
-    desc_inss = (s_salario + v_13) * 0.09
+    desc_inss = (s_salario + v_13) * 0.09 # INSS incide sobre Salário e 13º
+    
+    # IRRF incide sobre Salário e 13º (simplificado)
+    base_irrf = s_salario + v_13 - desc_inss
+    v_irrf = calcular_irrf(base_irrf)
+    
     desc_aviso_neg = sal_base if tipo_aviso == "Descontado" else 0.0
     
     debitos = {
-        "INSS (Provisório)": f"{desc_inss:,.2f}",
+        "INSS (Previdência)": f"{desc_inss:,.2f}",
+        "IRRF (Imposto de Renda)": f"{v_irrf:,.2f}",
         "Faltas/DSR": f"{v_faltas:,.2f}",
         "Outros Descontos": f"{outros_descontos:,.2f}"
     }
@@ -143,16 +160,19 @@ if dt_adm and dt_dem:
     total_debitos = sum(float(x.replace(",", "")) for x in debitos.values())
     total_liq = total_bruto - total_debitos
 
+    # EXIBIÇÃO
     st.success(f"### 📜 Lei 12.506/11: {dias_totais_aviso} dias de Aviso Prévio.")
     st.divider()
     c_a, c_b = st.columns(2)
     with c_a:
-        st.write("### 🟢 Verbas Rescisórias")
+        st.write("### 🟢 Créditos")
         st.table(creditos)
     with c_b:
         st.write("### 🔴 Descontos")
         st.table(debitos)
         st.metric("LÍQUIDO FINAL", f"R$ {total_liq:,.2f}")
+        if v_irrf == 0:
+            st.caption("ℹ️ Isento de Imposto de Renda (Base salarial abaixo do teto).")
 
     pdf_b = gerar_pdf_bytes({"nome": nome_emp, "adm": dt_adm.strftime("%d/%m/%Y"), "dem": dt_dem.strftime("%d/%m/%Y"), "creditos": creditos, "debitos": debitos, "liquido": total_liq})
     st.download_button("📥 Baixar PDF Detalhado", data=pdf_b, file_name=f"Rescisao_{nome_emp}.pdf", mime="application/pdf")
