@@ -15,20 +15,12 @@ def calcular_avos_ferias(adm, dem_com_projecao):
     return meses % 12 if meses % 12 != 0 or meses == 0 else 12
 
 def calcular_irrf(base_calculo):
-    """Calcula IRRF 2026 com base na tabela progressiva simplificada."""
-    # Dedução simplificada padrão (exemplo base 2024/2026)
     base_liquida = max(0, base_calculo - 564.80) 
-    
-    if base_liquida <= 2259.20:
-        return 0.0
-    elif base_liquida <= 2826.65:
-        return (base_liquida * 0.075) - 169.44
-    elif base_liquida <= 3751.05:
-        return (base_liquida * 0.15) - 381.44
-    elif base_liquida <= 4664.68:
-        return (base_liquida * 0.225) - 662.77
-    else:
-        return (base_liquida * 0.275) - 896.00
+    if base_liquida <= 2259.20: return 0.0
+    elif base_liquida <= 2826.65: return (base_liquida * 0.075) - 169.44
+    elif base_liquida <= 3751.05: return (base_liquida * 0.15) - 381.44
+    elif base_liquida <= 4664.68: return (base_liquida * 0.225) - 662.77
+    else: return (base_liquida * 0.275) - 896.00
 
 def gerar_pdf_bytes(dados):
     pdf = FPDF()
@@ -99,7 +91,7 @@ outros_descontos = st.sidebar.number_input("Outros Descontos", value=0.0)
 st.sidebar.divider()
 st.sidebar.header("⚖️ Opções Legais")
 vencidas_check = st.sidebar.checkbox("Possui Férias Vencidas?")
-multa477_check = st.sidebar.checkbox("Aplicar Multa 477 (Atraso)")
+aplicar_multa_477 = st.sidebar.checkbox("Aplicar Multa Art. 477 (Atraso)")
 
 if dt_adm and dt_dem:
     anos_casa = (dt_dem - dt_adm).days // 365
@@ -121,31 +113,42 @@ if dt_adm and dt_dem:
     
     avos_ferias = calcular_avos_ferias(dt_adm, dt_projecao)
     v_ferias_p = (base / 12) * avos_ferias
-    v_ferias_v = base if vencidas_check else 0.0
-    v_terco = (v_ferias_p + v_ferias_v) / 3
+    
+    # --- LÓGICA DE FÉRIAS VENCIDAS + MULTA (DOBRA) ---
+    v_ferias_v = 0.0
+    v_dobra_ferias = 0.0
+    if vencidas_check:
+        v_ferias_v = base  # Valor das férias vencidas simples
+        v_dobra_ferias = base  # Multa (Dobra) conforme Art. 137 CLT
+    
+    # Terço incide sobre as proporcionais, as vencidas e a dobra
+    v_terco = (v_ferias_p + v_ferias_v + v_dobra_ferias) / 3
+    
     v_aviso_val = (valor_dia * dias_totais_aviso) if (tipo_aviso == "Indenizado" and motivo_saida == "Sem Justa Causa") else 0.0
-    v_multa477_val = sal_base if multa477_check else 0.0
+    v_multa477_val = sal_base if aplicar_multa_477 else 0.0
     v_multa_fgts = fgts_total * (0.4 if motivo_saida == "Sem Justa Causa" else 0.2 if motivo_saida == "Acordo Comum" else 0.0)
 
     creditos = {
         "Saldo de Salário": f"{s_salario:,.2f}",
         f"13º Salário ({avos_13} avos)": f"{v_13:,.2f}",
         f"Férias Prop. ({avos_ferias}/12)": f"{v_ferias_p:,.2f}",
-        "1/3 Constitucional": f"{v_terco:,.2f}"
     }
-    if v_ferias_v > 0: creditos["Férias Vencidas"] = f"{v_ferias_v:,.2f}"
+    
+    if vencidas_check:
+        creditos["Férias Vencidas"] = f"{v_ferias_v:,.2f}"
+        creditos["Dobra de Férias (Art. 137 CLT)"] = f"{v_dobra_ferias:,.2f}"
+    
+    creditos["1/3 Constitucional (Total)"] = f"{v_terco:,.2f}"
+    
     if v_aviso_val > 0: creditos[f"Aviso Prévio ({dias_totais_aviso} dias)"] = f"{v_aviso_val:,.2f}"
     if v_multa477_val > 0: creditos["Multa Art. 477 CLT"] = f"{v_multa477_val:,.2f}"
     if v_multa_fgts > 0: creditos["Multa FGTS"] = f"{v_multa_fgts:,.2f}"
 
-    # --- LÓGICA DE DÉBITOS (INSS + IRRF) ---
+    # Débitos
     v_faltas = valor_dia * faltas_dias
-    desc_inss = (s_salario + v_13) * 0.09 # INSS incide sobre Salário e 13º
-    
-    # IRRF incide sobre Salário e 13º (simplificado)
+    desc_inss = (s_salario + v_13) * 0.09
     base_irrf = s_salario + v_13 - desc_inss
     v_irrf = calcular_irrf(base_irrf)
-    
     desc_aviso_neg = sal_base if tipo_aviso == "Descontado" else 0.0
     
     debitos = {
@@ -171,8 +174,6 @@ if dt_adm and dt_dem:
         st.write("### 🔴 Descontos")
         st.table(debitos)
         st.metric("LÍQUIDO FINAL", f"R$ {total_liq:,.2f}")
-        if v_irrf == 0:
-            st.caption("ℹ️ Isento de Imposto de Renda (Base salarial abaixo do teto).")
 
     pdf_b = gerar_pdf_bytes({"nome": nome_emp, "adm": dt_adm.strftime("%d/%m/%Y"), "dem": dt_dem.strftime("%d/%m/%Y"), "creditos": creditos, "debitos": debitos, "liquido": total_liq})
     st.download_button("📥 Baixar PDF Detalhado", data=pdf_b, file_name=f"Rescisao_{nome_emp}.pdf", mime="application/pdf")
